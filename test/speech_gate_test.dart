@@ -109,14 +109,12 @@ void main() {
       expect(samples[1], 32767);
     });
   });
-}
 
   group('SpeechGate calibration', () {
     test('rejects segments during calibration', () {
       final gate = SpeechGate(
         config: const SpeechGateConfig(calibrationSamples: 32000),
       );
-      // Only 0.5 s of audio — still calibrating
       gate.processSamples(List<int>.filled(8000, 0));
       expect(gate.isCalibrating, isTrue);
       final ok = gate.shouldRecognizeSegment(
@@ -135,3 +133,5 @@ void main() {
       expect(gate.state, SpeechState.silence);
     });
   });
+
+}

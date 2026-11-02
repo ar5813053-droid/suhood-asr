@@ -171,6 +171,9 @@ class SpeechGate {
 
   void _updateState(bool speechLike) {
     switch (state) {
+      case SpeechState.calibrating:
+        // Handled in processSamples; should not reach here.
+        break;
       case SpeechState.silence:
         if (speechLike) {
           _speechRun++;
