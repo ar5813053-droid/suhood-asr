@@ -39,7 +39,6 @@ class MicAudioSource implements AudioSource {
   StreamController<AudioChunk>? _controller;
   StreamSubscription<Uint8List>? _sub;
   bool _capturing = false;
-  AudioCaptureConfig _config = const AudioCaptureConfig();
 
   /// Latest RMS level 0..1 (updated while capturing).
   double level = 0.0;
@@ -65,7 +64,7 @@ class MicAudioSource implements AudioSource {
     if (_capturing) {
       throw StateError('Already capturing');
     }
-    _config = config;
+    // config reserved for future buffer sizing
     _controller = StreamController<AudioChunk>.broadcast();
     _startInternal();
     return _controller!.stream;
@@ -94,7 +93,7 @@ class MicAudioSource implements AudioSource {
 
       _capturing = true;
       var timestampMs = 0;
-      final bytesPerSecond = 16000 * 2; // pcm16 mono
+      const bytesPerSecond = 16000 * 2; // pcm16 mono
 
       _sub = stream.listen(
         (Uint8List data) {
