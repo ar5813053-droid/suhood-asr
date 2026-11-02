@@ -232,12 +232,45 @@ class HomeScreen extends StatelessWidget {
               ),
               const SizedBox(height: 16),
 
-              // Transcript
+              // Engine + streaming status
+              Consumer<AppState>(
+                builder: (context, state, _) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Engine: ${state.activeEngineLabel}',
+                        style: const TextStyle(
+                          color: Color(0xFF8B949E),
+                          fontSize: 12,
+                        ),
+                      ),
+                      Text(
+                        'Stream: ${state.streamingStatus}',
+                        style: const TextStyle(
+                          color: Color(0xFF8B949E),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'These are raw model phoneme outputs, not verified Quranic text. Recognition may be incorrect.',
+                style: TextStyle(
+                  color: Color(0xFFE9C46A),
+                  fontSize: 11,
+                  height: 1.3,
+                ),
+              ),
+              const SizedBox(height: 8),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   const Text(
-                    'Transcription',
+                    'RAW PHONEMES',
                     style: TextStyle(
                       color: Color(0xFF8B949E),
                       fontSize: 12,
@@ -246,17 +279,18 @@ class HomeScreen extends StatelessWidget {
                   ),
                   Consumer<AppState>(
                     builder: (context, state, _) {
-                      return TextButton(
+                      return TextButton.icon(
                         onPressed: state.clearTranscript,
+                        icon: const Icon(Icons.clear, size: 16),
+                        label: const Text(
+                          'Clear',
+                          style: TextStyle(fontSize: 12),
+                        ),
                         style: TextButton.styleFrom(
                           foregroundColor: const Color(0xFF8B949E),
                           padding: EdgeInsets.zero,
-                          minimumSize: Size.zero,
+                          minimumSize: const Size(0, 28),
                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        child: const Text(
-                          'Clear',
-                          style: TextStyle(fontSize: 12),
                         ),
                       );
                     },
@@ -267,34 +301,84 @@ class HomeScreen extends StatelessWidget {
               Expanded(
                 child: Consumer<AppState>(
                   builder: (context, state, _) {
-                    final text = state.transcriptDisplay;
-                    final placeholder = !state.modelReady
-                        ? 'Download the model (≈36 MB, one-time),\nthen start recording to transcribe Quran recitation.\n\nOffline after download.'
-                        : (state.isRecording
-                            ? 'Listening… speak a verse'
-                            : 'Press the microphone to begin.');
-                    return Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF1A2332),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: const Color(0xFF2A3544)),
-                      ),
-                      child: SingleChildScrollView(
-                        child: Text(
-                          text.isEmpty ? placeholder : text,
-                          textAlign: TextAlign.right,
-                          textDirection: TextDirection.rtl,
-                          style: TextStyle(
-                            color: text.isEmpty
-                                ? const Color(0xFF6E7681)
-                                : const Color(0xFFE8E6E3),
-                            fontSize: 18,
-                            height: 1.6,
+                    final isPrimary = state.selectedEngineId.contains('zipformer');
+                    final partial = isPrimary
+                        ? state.partialPhonemes
+                        : state.transcriptDisplay;
+                    final finals = isPrimary
+                        ? state.finalPhonemes
+                        : state.transcriptDisplay;
+                    final placeholder = isPrimary
+                        ? (state.zipformerInferenceReady
+                            ? 'Press the microphone to stream raw phonemes.'
+                            : 'Load Zipformer 3.2 in Settings first.')
+                        : (state.modelReady
+                            ? 'Press the microphone (diagnostic engine).'
+                            : 'Download diagnostic model or use Zipformer.');
+                    return Column(
+                      children: [
+                        Expanded(
+                          child: Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1A2332),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: const Color(0xFF2A3544)),
+                            ),
+                            child: SingleChildScrollView(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  const Text(
+                                    'PARTIAL',
+                                    style: TextStyle(
+                                      color: Color(0xFF8B949E),
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    partial.isEmpty ? placeholder : partial,
+                                    textAlign: TextAlign.right,
+                                    textDirection: TextDirection.rtl,
+                                    style: TextStyle(
+                                      color: partial.isEmpty
+                                          ? const Color(0xFF6E7681)
+                                          : const Color(0xFFE8E6E3),
+                                      fontSize: 16,
+                                      height: 1.5,
+                                    ),
+                                  ),
+                                  const Divider(color: Color(0xFF2A3544), height: 24),
+                                  const Text(
+                                    'FINAL',
+                                    style: TextStyle(
+                                      color: Color(0xFF8B949E),
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    finals.isEmpty ? '—' : finals,
+                                    textAlign: TextAlign.right,
+                                    textDirection: TextDirection.rtl,
+                                    style: TextStyle(
+                                      color: finals.isEmpty
+                                          ? const Color(0xFF6E7681)
+                                          : const Color(0xFF95D5B2),
+                                      fontSize: 16,
+                                      height: 1.5,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
                         ),
-                      ),
+                      ],
                     );
                   },
                 ),

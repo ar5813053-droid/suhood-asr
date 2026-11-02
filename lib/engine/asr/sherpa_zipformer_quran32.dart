@@ -1,11 +1,11 @@
-/// Zipformer Quran 3.2 — OnlineRecognizer initialization (Milestone 2.4-B).
+/// Zipformer Quran 3.2 — OnlineRecognizer + live streaming (M2.4-B/C).
 ///
-/// Loads sherpa-onnx OnlineZipformer2Ctc from validated local files.
-/// Does NOT run microphone streaming (that is M2.4-C).
+/// Output is RAW phoneme/token text from the model, not verified Quran Arabic.
 library;
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
@@ -13,7 +13,6 @@ import '../audio/audio_source.dart';
 import 'asr_engine.dart';
 import 'zipformer32_model_store.dart';
 
-/// Result of a load attempt.
 class Zipformer32InitResult {
   final bool success;
   final String message;
@@ -28,13 +27,54 @@ class Zipformer32InitResult {
   });
 }
 
+/// One decode step result (partial or segment-final).
+class ZipformerStreamUpdate {
+  final String partialText;
+  final List<String> tokens;
+  final bool isEndpoint;
+  final bool isSessionFinal;
+
+  const ZipformerStreamUpdate({
+    required this.partialText,
+    required this.tokens,
+    this.isEndpoint = false,
+    this.isSessionFinal = false,
+  });
+}
+
+/// PCM16 (int16 LE list) → float32 [-1, 1] for sherpa acceptWaveform.
+Float32List pcm16ToFloat32(List<int> pcm16) {
+  final out = Float32List(pcm16.length);
+  for (var i = 0; i < pcm16.length; i++) {
+    var s = pcm16[i];
+    // Clamp to int16 range if values are already wide
+    if (s > 32767) s = 32767;
+    if (s < -32768) s = -32768;
+    out[i] = s / 32768.0;
+  }
+  return out;
+}
+
+bool isPcmSilenceOrInvalid(List<int> pcm16) {
+  if (pcm16.isEmpty) return true;
+  var maxAbs = 0;
+  for (final s in pcm16) {
+    final a = s.abs();
+    if (a > maxAbs) maxAbs = a;
+  }
+  return maxAbs < 8; // near-digital silence
+}
+
 class SherpaZipformerQuran32Engine implements AsrEngine {
   final Zipformer32ModelStore store;
 
   sherpa.OnlineRecognizer? _recognizer;
+  sherpa.OnlineStream? _stream;
   AsrModelStatus _status = AsrModelStatus.notPresent;
   String? _lastError;
   int lastInitMs = 0;
+  bool _decodeBusy = false;
+  bool _sessionActive = false;
 
   SherpaZipformerQuran32Engine({required this.store});
 
@@ -47,11 +87,11 @@ class SherpaZipformerQuran32Engine implements AsrEngine {
   @override
   String? get lastError => _lastError;
 
-  /// True only after OnlineRecognizer was constructed successfully.
   bool get isInitialized =>
       _recognizer != null && _status == AsrModelStatus.ready;
 
-  /// Initialize OnlineRecognizer from store paths after validation.
+  bool get isSessionActive => _sessionActive;
+
   Future<Zipformer32InitResult> initializeFromStore() async {
     await dispose();
     _lastError = null;
@@ -122,9 +162,8 @@ class SherpaZipformerQuran32Engine implements AsrEngine {
       );
 
       final recognizer = sherpa.OnlineRecognizer(config);
-      // Ensure native side accepts the graph by allocating a stream.
-      final stream = recognizer.createStream();
-      stream.free();
+      final probe = recognizer.createStream();
+      probe.free();
 
       _recognizer = recognizer;
       sw.stop();
@@ -156,28 +195,119 @@ class SherpaZipformerQuran32Engine implements AsrEngine {
     await initializeFromStore();
   }
 
-  /// Not used in M2.4-B — streaming inference is M2.4-C.
+  /// Start one persistent OnlineStream for a recording session.
+  void startSession() {
+    if (!isInitialized) {
+      throw StateError('Zipformer not initialized');
+    }
+    endSession(finalize: false);
+    _stream = _recognizer!.createStream();
+    _sessionActive = true;
+    _decodeBusy = false;
+  }
+
+  /// Feed PCM16 samples; returns latest hypothesis if decode ran.
+  ZipformerStreamUpdate? acceptPcm16(List<int> pcm16, {int sampleRate = 16000}) {
+    if (!_sessionActive || _recognizer == null || _stream == null) {
+      return null;
+    }
+    if (pcm16.isEmpty) return null;
+    if (isPcmSilenceOrInvalid(pcm16)) {
+      // Still allow very quiet speech through SpeechGate; here only skip empty/digital zero.
+      // Actually isPcmSilence is very strict (maxAbs < 8). Skip accept to save work.
+      return null;
+    }
+
+    final floats = pcm16ToFloat32(pcm16);
+    _stream!.acceptWaveform(samples: floats, sampleRate: sampleRate);
+
+    if (_decodeBusy) return null;
+    _decodeBusy = true;
+    try {
+      while (_recognizer!.isReady(_stream!)) {
+        _recognizer!.decode(_stream!);
+      }
+      final result = _recognizer!.getResult(_stream!);
+      final endpoint = _recognizer!.isEndpoint(_stream!);
+      if (endpoint) {
+        // Segment boundary: keep stream, reset state for next utterance.
+        _recognizer!.reset(_stream!);
+      }
+      return ZipformerStreamUpdate(
+        partialText: result.text,
+        tokens: List<String>.from(result.tokens),
+        isEndpoint: endpoint,
+      );
+    } finally {
+      _decodeBusy = false;
+    }
+  }
+
+  /// End session: inputFinished + final decode.
+  ZipformerStreamUpdate? endSession({bool finalize = true}) {
+    final recognizer = _recognizer;
+    final stream = _stream;
+    _sessionActive = false;
+
+    ZipformerStreamUpdate? finalUpdate;
+    if (finalize && recognizer != null && stream != null) {
+      try {
+        stream.inputFinished();
+        while (recognizer.isReady(stream)) {
+          recognizer.decode(stream);
+        }
+        final result = recognizer.getResult(stream);
+        finalUpdate = ZipformerStreamUpdate(
+          partialText: result.text,
+          tokens: List<String>.from(result.tokens),
+          isEndpoint: true,
+          isSessionFinal: true,
+        );
+      } catch (_) {}
+    }
+
+    try {
+      stream?.free();
+    } catch (_) {}
+    _stream = null;
+    _decodeBusy = false;
+    return finalUpdate;
+  }
+
   @override
   Future<AsrResult> recognize(AudioChunk chunk) async {
+    // One-shot not preferred for streaming engine; used only if needed.
+    if (!isInitialized) {
+      return AsrResult(
+        hypotheses: const [],
+        isFinal: true,
+        status: _status,
+        errorMessage: _lastError ?? 'Zipformer 3.2 not initialized',
+      );
+    }
+    startSession();
+    final u = acceptPcm16(chunk.samples, sampleRate: chunk.sampleRate);
+    final fin = endSession(finalize: true);
+    final text = fin?.partialText ?? u?.partialText ?? '';
     return AsrResult(
-      hypotheses: const [],
+      hypotheses: text.isEmpty
+          ? const []
+          : [AsrHypothesis(text: text, confidence: 0.5)],
       isFinal: true,
       status: _status,
-      errorMessage: isInitialized
-          ? 'Streaming inference not enabled (Milestone 2.4-C)'
-          : (_lastError ?? 'Zipformer 3.2 not initialized'),
     );
   }
 
   @override
   Stream<AsrResult> recognizeStream(Stream<AudioChunk> audioStream) {
     return Stream.error(
-      StateError('Streaming not implemented in M2.4-B'),
+      StateError('Use acceptPcm16 session API for Zipformer streaming'),
     );
   }
 
   @override
   Future<void> dispose() async {
+    endSession(finalize: false);
     try {
       _recognizer?.free();
     } catch (_) {}

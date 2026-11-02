@@ -59,6 +59,9 @@ class AppState extends ChangeNotifier {
   String _lastMergeNote = '';
   String _vadStateLabel = 'silence';
   double _peakLevel = 0.0;
+  String _partialPhonemes = '';
+  String _finalPhonemes = '';
+  String _streamingStatus = 'Idle';
 
   StreamSubscription<AudioChunk>? _audioSub;
   final List<int> _pcmBuffer = [];
@@ -99,6 +102,9 @@ class AppState extends ChangeNotifier {
   String get vadStateLabel => _vadStateLabel;
   double get noiseFloor => speechGate.noiseFloor;
   double get peakLevel => _peakLevel;
+  String get partialPhonemes => _partialPhonemes;
+  String get finalPhonemes => _finalPhonemes;
+  String get streamingStatus => _streamingStatus;
 
   void setDebugMode(bool v) {
     _debugMode = v;
@@ -252,7 +258,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> startRecording() async {
     if (_isRecording) return;
-    // Primary Zipformer has no inference in M2.4-A.
+
     if (engineRegistry.isPrimarySelected) {
       if (!zipformerEngine.isInitialized) {
         _errorMessage =
@@ -260,17 +266,13 @@ class AppState extends ChangeNotifier {
         notifyListeners();
         return;
       }
-      _errorMessage =
-          'Streaming recognition is Milestone 2.4-C. Engine is loaded; mic streaming not enabled yet.';
-      notifyListeners();
-      return;
-    }
-    if (!modelReady) {
+    } else if (!modelReady) {
       _errorMessage =
           'Diagnostic model not ready. Download quran-asr-small first.';
       notifyListeners();
       return;
     }
+
     final permitted = await micSource.requestPermission();
     if (!permitted) {
       _errorMessage = 'Microphone permission denied';
@@ -278,51 +280,152 @@ class AppState extends ChangeNotifier {
       return;
     }
 
+    if (engineRegistry.isPrimarySelected) {
+      await _startZipformerStreaming();
+    } else {
+      await _startDiagnosticRecording();
+    }
+  }
+
+  Future<void> _startZipformerStreaming() async {
+    _errorMessage = null;
+    _stopRequested = false;
+    _partialPhonemes = '';
+    _streamingStatus = 'Starting…';
+    speechGate.reset();
+    _asrCalls = 0;
+    _asrRejected = 0;
+    _asrAccepted = 0;
+    _vadStateLabel = 'calibrating';
+    _peakLevel = 0.0;
+    _pcmBuffer.clear();
+
+    try {
+      zipformerEngine.startSession();
+    } catch (e) {
+      _errorMessage = 'Failed to start stream: $e';
+      _streamingStatus = 'Error';
+      notifyListeners();
+      return;
+    }
+
+    final ok = await micSource.start();
+    if (!ok) {
+      zipformerEngine.endSession(finalize: false);
+      _errorMessage = micSource.lastError ?? 'Microphone start failed';
+      _streamingStatus = 'Error';
+      notifyListeners();
+      return;
+    }
+
+    _isRecording = true;
+    _listenStatus = 'Listening (Zipformer stream)…';
+    _streamingStatus = 'Streaming';
+    notifyListeners();
+
+    _audioSub = micSource.audioStream.listen(
+      (chunk) {
+        if (_stopRequested) return;
+        if (chunk.samples.isEmpty) return;
+
+        speechGate.processSamples(chunk.samples);
+        final st = speechGate.analyzeFrame(chunk.samples);
+        _audioLevel = st.rms.clamp(0.0, 1.0);
+        if (st.rms > _peakLevel) _peakLevel = st.rms;
+        _vadStateLabel = speechGate.state.name;
+
+        if (speechGate.state == SpeechState.calibrating) {
+          _listenStatus = 'Calibrating noise…';
+          notifyListeners();
+          return;
+        }
+
+        if (!speechGate.inSpeechRegion) {
+          _asrRejected++;
+          notifyListeners();
+          return;
+        }
+
+        final update = zipformerEngine.acceptPcm16(
+          chunk.samples,
+          sampleRate: chunk.sampleRate,
+        );
+        _asrCalls++;
+        if (update == null) {
+          notifyListeners();
+          return;
+        }
+
+        _partialPhonemes = update.partialText;
+        _lastRawAsr = update.partialText;
+        if (update.isEndpoint && update.partialText.trim().isNotEmpty) {
+          final piece = update.partialText.trim();
+          if (_finalPhonemes.isEmpty) {
+            _finalPhonemes = piece;
+          } else {
+            _finalPhonemes = '$_finalPhonemes | $piece';
+          }
+          _asrAccepted++;
+        }
+        notifyListeners();
+      },
+      onError: (e) {
+        _errorMessage = e.toString();
+        _streamingStatus = 'Error';
+        notifyListeners();
+      },
+    );
+  }
+
+  Future<void> _startDiagnosticRecording() async {
     _errorMessage = null;
     _stopRequested = false;
     _pcmBuffer.clear();
     speechGate.reset();
-    // Keep prior transcript unless user cleared — do not wipe on restart
-    _isRecording = true;
-    _audioLevel = 0.0;
-    _peakLevel = 0.0;
-    _listenStatus = 'Calibrating noise…';
+    _asrCalls = 0;
+    _asrRejected = 0;
+    _asrAccepted = 0;
+    _lastRawAsr = '';
+    _lastFilteredAsr = '';
+    _lastRejectReason = '';
+    _lastMergeNote = '';
     _vadStateLabel = 'calibrating';
+    _peakLevel = 0.0;
+    _streamingStatus = 'Diagnostic offline CTC';
+
+    final ok = await micSource.start();
+    if (!ok) {
+      _errorMessage = micSource.lastError ?? 'Microphone start failed';
+      notifyListeners();
+      return;
+    }
+
+    _isRecording = true;
+    _listenStatus = 'Listening…';
     notifyListeners();
 
-    final stream = micSource.start(const AudioCaptureConfig(sampleRate: 16000));
-    _audioSub = stream.listen(
+    _audioSub = micSource.audioStream.listen(
       (chunk) {
-        if (!_isRecording || _stopRequested) return;
-        speechGate.processSamples(chunk.samples);
-        _vadStateLabel = speechGate.state.name;
-        if (speechGate.isCalibrating) {
-          _listenStatus = 'Calibrating noise…';
-        } else if (speechGate.state == SpeechState.speech ||
-            speechGate.state == SpeechState.hangover) {
-          _listenStatus = 'Listening';
-        } else {
-          _listenStatus = 'Listening';
-        }
+        if (_stopRequested) return;
         _pcmBuffer.addAll(chunk.samples);
-        _audioLevel = micSource.level;
-        // peak from this chunk
-        var peak = 0.0;
-        for (final s in chunk.samples) {
-          final a = (s / 32768.0).abs();
-          if (a > peak) peak = a;
+        speechGate.processSamples(chunk.samples);
+        final st = speechGate.analyzeFrame(chunk.samples);
+        _audioLevel = st.rms.clamp(0.0, 1.0);
+        if (st.rms > _peakLevel) _peakLevel = st.rms;
+        _vadStateLabel = speechGate.state.name;
+        if (speechGate.state == SpeechState.calibrating) {
+          _listenStatus = 'Calibrating noise…';
         }
-        _peakLevel = peak;
         notifyListeners();
       },
-      onError: (Object e) {
+      onError: (e) {
         _errorMessage = e.toString();
-        stopRecording();
+        notifyListeners();
       },
     );
 
-    _segmentTimer =
-        Timer.periodic(const Duration(milliseconds: 1500), (_) {
+    _segmentTimer?.cancel();
+    _segmentTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
       if (!_stopRequested) {
         _processSegment(finalFlush: false);
       }
@@ -331,32 +434,35 @@ class AppState extends ChangeNotifier {
 
   Future<void> _processSegment({required bool finalFlush}) async {
     if (_processing) return;
-    if (_pcmBuffer.isEmpty) return;
-    if (!finalFlush && _pcmBuffer.length < 8000) return;
-    if (_stopRequested && !finalFlush) return;
-
+    if (engineRegistry.isPrimarySelected) return;
     _processing = true;
     try {
+      if (_pcmBuffer.isEmpty) return;
+      if (!finalFlush && _pcmBuffer.length < 8000) return;
+
       final take = finalFlush
           ? _pcmBuffer.length
           : (_pcmBuffer.length > 48000 ? 48000 : _pcmBuffer.length);
-      if (take < 1600) return;
 
       final segment = List<int>.from(_pcmBuffer.sublist(0, take));
+      speechGate.processSamples(segment);
+      final st = speechGate.analyzeFrame(segment);
+      _vadStateLabel = speechGate.state.name;
+      _audioLevel = st.rms.clamp(0.0, 1.0);
 
-      if (!speechGate.shouldRecognizeSegment(segment, finalFlush: finalFlush)) {
+      if (speechGate.state == SpeechState.calibrating ||
+          !speechGate.shouldRecognizeSegment(segment, finalFlush: finalFlush)) {
         _asrRejected++;
-        _lastRejectReason = speechGate.isCalibrating
-            ? 'calibration in progress'
-            : 'speech gate: silence/noise';
-        final keep = finalFlush ? 0 : 3200;
-        if (_pcmBuffer.length > keep) {
-          final tail = _pcmBuffer.sublist(_pcmBuffer.length - keep);
-          _pcmBuffer
-            ..clear()
-            ..addAll(tail);
-        } else if (finalFlush) {
+        if (finalFlush) {
           _pcmBuffer.clear();
+        } else if (_pcmBuffer.length > 16000) {
+          const keep = 3200;
+          if (_pcmBuffer.length > keep) {
+            final tail = _pcmBuffer.sublist(_pcmBuffer.length - keep);
+            _pcmBuffer
+              ..clear()
+              ..addAll(tail);
+          }
         }
         notifyListeners();
         return;
@@ -406,7 +512,6 @@ class AppState extends ChangeNotifier {
         return;
       }
 
-      // accepted or uncertain — publish (uncertain still shown; debug explains)
       final text = v.filteredText ?? raw;
       if (text.isEmpty) {
         _asrRejected++;
@@ -431,7 +536,23 @@ class AppState extends ChangeNotifier {
     _audioSub = null;
     await micSource.stop();
 
-    await _processSegment(finalFlush: true);
+    if (engineRegistry.isPrimarySelected) {
+      final fin = zipformerEngine.endSession(finalize: true);
+      if (fin != null && fin.partialText.trim().isNotEmpty) {
+        final text = fin.partialText.trim();
+        if (_finalPhonemes.isEmpty) {
+          _finalPhonemes = text;
+        } else if (!_finalPhonemes.endsWith(text)) {
+          _finalPhonemes = '$_finalPhonemes | $text';
+        }
+        _partialPhonemes = text;
+        _lastRawAsr = text;
+      }
+      _streamingStatus = 'Stopped';
+    } else {
+      await _processSegment(finalFlush: true);
+      _streamingStatus = 'Idle';
+    }
 
     _pcmBuffer.clear();
     _isRecording = false;
@@ -444,6 +565,7 @@ class AppState extends ChangeNotifier {
   }
 
   void clearTranscript() {
+
     merger.clear();
     _detectedSurahAyah = '—';
     _errorMessage = null;
