@@ -72,12 +72,16 @@ class HomeScreen extends StatelessWidget {
                       children: [
                         Row(
                           children: [
-                            Icon(
-                              Icons.memory,
-                              size: 18,
-                              color: state.asrStatus == AsrModelStatus.ready
-                                  ? const Color(0xFF95D5B2)
-                                  : const Color(0xFF8B949E),
+                            GestureDetector(
+                              onLongPress: () =>
+                                  state.setDebugMode(!state.debugMode),
+                              child: Icon(
+                                Icons.memory,
+                                size: 18,
+                                color: state.asrStatus == AsrModelStatus.ready
+                                    ? const Color(0xFF95D5B2)
+                                    : const Color(0xFF8B949E),
+                              ),
                             ),
                             const SizedBox(width: 10),
                             Expanded(
@@ -158,6 +162,21 @@ class HomeScreen extends StatelessWidget {
                         ),
                       ),
                     ],
+                  );
+                },
+              ),
+              // Debug metrics (only when enabled via long-press on model status later)
+              Consumer<AppState>(
+                builder: (context, state, _) {
+                  if (!state.debugMode) return const SizedBox.shrink();
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      'VAD: ${state.vadStateLabel}  |  floor: ${state.noiseFloor.toStringAsFixed(4)}  |  '
+                      'ASR: ${state.asrCalls}  rej: ${state.asrRejected}  |  ${state.lastInferenceMs} ms\n'
+                      'raw: ${state.lastRawAsr}',
+                      style: const TextStyle(color: Color(0xFF6E7681), fontSize: 10),
+                    ),
                   );
                 },
               ),

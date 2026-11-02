@@ -10,6 +10,7 @@ import 'dart:typed_data';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
 import '../audio/audio_source.dart';
+import '../audio/speech_gate.dart';
 import 'asr_engine.dart';
 import 'model_manager.dart';
 
@@ -123,13 +124,20 @@ class SherpaQuranAsrEngine implements AsrEngine {
         errorMessage: _lastError ?? 'ASR model not ready',
       );
     }
-    if (chunk.samples.isEmpty) {
-      return const AsrResult(hypotheses: [], isFinal: true);
+    // Hard reject invalid / silent buffers before touching the model.
+    if (!isValidPcmForAsr(chunk, minSamples: 1600)) {
+      return const AsrResult(
+        hypotheses: [],
+        isFinal: true,
+        status: AsrModelStatus.ready,
+        errorMessage: 'rejected: invalid or silent PCM',
+      );
     }
 
     _status = AsrModelStatus.inferring;
     try {
-      final samples = pcm16ToFloat32(chunk.samples);
+      final cleaned = removeDcOffset(chunk.samples);
+      final samples = pcm16ToFloat32(cleaned);
       final stream = _recognizer!.createStream();
       stream.acceptWaveform(
         samples: samples,
@@ -137,20 +145,27 @@ class SherpaQuranAsrEngine implements AsrEngine {
       );
       _recognizer!.decode(stream);
       final result = _recognizer!.getResult(stream);
+      final raw = result.text;
       stream.free();
 
-      final text = normalizeTranscript(result.text);
+      final text = normalizeTranscript(raw);
       _status = AsrModelStatus.ready;
 
-      if (text.isEmpty) {
-        return const AsrResult(hypotheses: [], isFinal: true);
+      // Reject empty or single-character noise emissions from CTC on silence.
+      if (text.isEmpty || _isLikelyHallucination(text, chunk.samples.length)) {
+        return AsrResult(
+          hypotheses: const [],
+          isFinal: true,
+          status: AsrModelStatus.ready,
+          errorMessage: 'rejected: empty or hallucination-like output',
+        );
       }
 
       return AsrResult(
         hypotheses: [
           AsrHypothesis(
             text: text,
-            confidence: 1.0, // CTC greedy has no calibrated score exposed
+            confidence: 1.0, // CTC greedy — no calibrated score
             startMs: chunk.timestampMs,
             endMs: chunk.timestampMs +
                 (chunk.samples.length * 1000) ~/ chunk.sampleRate,
@@ -169,6 +184,17 @@ class SherpaQuranAsrEngine implements AsrEngine {
         errorMessage: _lastError,
       );
     }
+  }
+
+  /// Heuristic: very short CTC text relative to long quiet audio is likely noise.
+  bool _isLikelyHallucination(String text, int sampleCount) {
+    final letters = text.replaceAll(RegExp(r'\s+'), '');
+    if (letters.isEmpty) return true;
+    // Less than 2 Arabic letters for >1s of audio → ignore
+    if (letters.length < 2 && sampleCount > 16000) return true;
+    // Single isolated letter with no word separator context
+    if (letters.length == 1) return true;
+    return false;
   }
 
   /// Accumulate PCM and run recognition on each completed segment.

@@ -4,7 +4,7 @@
 
 Modular architecture for live Quran recitation transcription, Surah/Ayah identification, word-level tracking, multi-Qira'at support, and future Tajweed analysis.
 
-> **Milestone 2 is implemented:** real microphone capture + offline Quran ASR baseline (`Abdou/quran-asr-small` via sherpa-onnx).
+> **Milestone 2.1:** adaptive speech gate (VAD-like) so **silence never produces Quran text**. Same model: `Abdou/quran-asr-small` via sherpa-onnx.
 
 ---
 
@@ -35,6 +35,8 @@ Development is possible from an Android phone (Termux + browser + GitHub Actions
 | Model download (runtime, not in git) | ✅ |
 | Offline Quran ASR (quran-asr-small int8) | ✅ |
 | Chunk / segment transcription | ✅ |
+| Adaptive speech gate (silence → no ASR) | ✅ |
+| False transcript on silence fixed | ✅ |
 | UI: download, level, transcript, clear | ✅ |
 | Surah/Ayah matcher | ❌ Stub (always no match) |
 | True frame-level streaming ASR | ❌ Segment-based offline CTC |
