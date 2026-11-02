@@ -1,16 +1,16 @@
-/// Real Android microphone capture using the `record` package.
+/// Real Android microphone capture via platform channel (AudioRecord).
 /// Produces 16 kHz mono PCM chunks suitable for the Quran ASR model.
 library;
 
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:record/record.dart';
 
 import 'audio_source.dart';
 
-/// Converts interleaved PCM16 bytes to a list of sample values (-32768..32767).
+/// Converts interleaved PCM16 bytes to sample values.
 List<int> pcm16BytesToSamples(Uint8List bytes) {
   final bd = ByteData.sublistView(bytes);
   final samples = <int>[];
@@ -28,20 +28,20 @@ double pcm16RmsLevel(List<int> samples) {
     final v = s / 32768.0;
     sum += v * v;
   }
-  final rms = (sum / samples.length);
-  // Soft clip for display
+  final rms = sum / samples.length;
   return (rms * 4.0).clamp(0.0, 1.0);
 }
 
-/// Real microphone [AudioSource] backed by `package:record`.
+/// Real microphone [AudioSource] using Android AudioRecord (platform channel).
 class MicAudioSource implements AudioSource {
-  final AudioRecorder _recorder = AudioRecorder();
-  StreamController<AudioChunk>? _controller;
-  StreamSubscription<Uint8List>? _sub;
-  bool _capturing = false;
+  static const _method = MethodChannel('com.suhood.asr/audio');
+  static const _events = EventChannel('com.suhood.asr/audio_stream');
 
-  /// Latest RMS level 0..1 (updated while capturing).
+  StreamController<AudioChunk>? _controller;
+  StreamSubscription<dynamic>? _sub;
+  bool _capturing = false;
   double level = 0.0;
+  int _timestampMs = 0;
 
   @override
   String get name => 'MicAudioSource';
@@ -49,7 +49,6 @@ class MicAudioSource implements AudioSource {
   @override
   bool get isCapturing => _capturing;
 
-  /// Request RECORD_AUDIO permission. Returns true if granted.
   Future<bool> requestPermission() async {
     final status = await Permission.microphone.request();
     return status.isGranted;
@@ -64,8 +63,8 @@ class MicAudioSource implements AudioSource {
     if (_capturing) {
       throw StateError('Already capturing');
     }
-    // config reserved for future buffer sizing
     _controller = StreamController<AudioChunk>.broadcast();
+    _timestampMs = 0;
     _startInternal();
     return _controller!.stream;
   }
@@ -74,49 +73,34 @@ class MicAudioSource implements AudioSource {
     try {
       final granted = await requestPermission();
       if (!granted) {
-        _controller?.addError(
-          StateError('Microphone permission denied'),
-        );
+        _controller?.addError(StateError('Microphone permission denied'));
         await stop();
         return;
       }
 
-      // Stream PCM16 at 16 kHz mono.
-      final stream = await _recorder.startStream(
-        const RecordConfig(
-          encoder: AudioEncoder.pcm16bits,
-          sampleRate: 16000,
-          numChannels: 1,
-          bitRate: 256000,
-        ),
-      );
-
-      _capturing = true;
-      var timestampMs = 0;
-      const bytesPerSecond = 16000 * 2; // pcm16 mono
-
-      _sub = stream.listen(
-        (Uint8List data) {
-          if (!_capturing || data.isEmpty) return;
-          final samples = pcm16BytesToSamples(data);
+      _sub = _events.receiveBroadcastStream().listen(
+        (dynamic event) {
+          if (!_capturing || event == null) return;
+          final samples = (event as List).cast<int>();
+          if (samples.isEmpty) return;
           level = pcm16RmsLevel(samples);
           final chunk = AudioChunk(
             samples: samples,
             sampleRate: 16000,
             channels: 1,
             format: 'pcm16',
-            timestampMs: timestampMs,
+            timestampMs: _timestampMs,
           );
-          timestampMs += (data.length * 1000) ~/ bytesPerSecond;
+          _timestampMs += (samples.length * 1000) ~/ 16000;
           _controller?.add(chunk);
         },
         onError: (Object e, StackTrace st) {
           _controller?.addError(e, st);
         },
-        onDone: () {
-          _capturing = false;
-        },
       );
+
+      await _method.invokeMethod<bool>('start');
+      _capturing = true;
     } catch (e, st) {
       _controller?.addError(e, st);
       await stop();
@@ -129,9 +113,7 @@ class MicAudioSource implements AudioSource {
     await _sub?.cancel();
     _sub = null;
     try {
-      if (await _recorder.isRecording()) {
-        await _recorder.stop();
-      }
+      await _method.invokeMethod<bool>('stop');
     } catch (_) {}
     level = 0.0;
     await _controller?.close();
@@ -141,6 +123,5 @@ class MicAudioSource implements AudioSource {
   @override
   Future<void> dispose() async {
     await stop();
-    await _recorder.dispose();
   }
 }

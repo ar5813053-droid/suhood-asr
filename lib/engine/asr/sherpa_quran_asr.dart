@@ -33,7 +33,6 @@ class SherpaQuranAsrEngine implements AsrEngine {
   sherpa.OfflineRecognizer? _recognizer;
   AsrModelStatus _status = AsrModelStatus.notPresent;
   String? _lastError;
-  AsrConfig _config = const AsrConfig(); // ignore: unused_field
 
   SherpaQuranAsrEngine({ModelManager? modelManager})
       : modelManager = modelManager ?? ModelManager();
