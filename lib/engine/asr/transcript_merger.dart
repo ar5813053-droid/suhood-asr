@@ -94,7 +94,7 @@ class TranscriptMerger {
 
     final appended = next.sublist(overlap);
     if (appended.isNotEmpty) {
-      _finalized = '${_finalized} ${appended.join(' ')}'.trim();
+      _finalized = '$_finalized ${appended.join(' ')}'.trim();
     }
 
     final d = MergeDecision(
