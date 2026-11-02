@@ -22,6 +22,7 @@ void main() {
     expect(find.text('Transcription'), findsOneWidget);
     expect(find.text('Tap to start'), findsOneWidget);
     expect(find.byIcon(Icons.mic), findsOneWidget);
+    expect(find.byIcon(Icons.settings), findsOneWidget);
   });
 
   testWidgets('Clear button is present', (tester) async {

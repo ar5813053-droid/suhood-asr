@@ -1,7 +1,7 @@
 name: suhood_asr
 description: Offline-first Quranic Speech-to-Text engine for Android. Modular architecture for live recitation transcription, Surah/Ayah identification, and future Tajweed analysis.
 publish_to: 'none'
-version: 0.2.0+2
+version: 0.2.4+3
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
@@ -16,6 +16,9 @@ dependencies:
   path: ^1.9.0
   http: ^1.2.2
   sherpa_onnx: ^1.12.36
+  crypto: ^3.0.5
+  file_picker: ^8.1.2
+  shared_preferences: ^2.3.2
 
 dev_dependencies:
   flutter_test:

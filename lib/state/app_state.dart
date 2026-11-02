@@ -3,10 +3,13 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../engine/asr/asr_engine.dart';
+import '../engine/asr/engine_ids.dart';
+import '../engine/asr/engine_registry.dart';
 import '../engine/asr/model_manager.dart';
 import '../engine/asr/output_validator.dart';
 import '../engine/asr/sherpa_quran_asr.dart';
 import '../engine/asr/transcript_merger.dart';
+import '../engine/asr/zipformer32_model_store.dart';
 import '../engine/audio/audio_source.dart';
 import '../engine/audio/mic_audio_source.dart';
 import '../engine/audio/speech_gate.dart';
@@ -26,8 +29,11 @@ class AppState extends ChangeNotifier {
   final SpeechGate speechGate = SpeechGate();
   final AsrOutputValidator validator = AsrOutputValidator();
   final TranscriptMerger merger = TranscriptMerger();
+  final EngineRegistry engineRegistry = EngineRegistry();
+  final Zipformer32ModelStore zipformerStore = Zipformer32ModelStore();
 
   bool _isRecording = false;
+  bool _isImportingZipformer = false;
   bool _isDownloading = false;
   String _detectedSurahAyah = '—';
   String _modelStatusLabel = 'Model: checking…';
@@ -69,6 +75,11 @@ class AppState extends ChangeNotifier {
   AsrModelStatus get asrStatus => asrEngine.status;
   bool get modelReady => asrEngine.status == AsrModelStatus.ready;
   bool get debugMode => _debugMode;
+  bool get isImportingZipformer => _isImportingZipformer;
+  String get selectedEngineId => engineRegistry.selectedId;
+  String get activeEngineLabel => engineDisplayName(engineRegistry.selectedId);
+  /// Zipformer is never inference-ready in M2.4-A.
+  bool get zipformerInferenceReady => zipformerStore.isReadyForInference;
   int get asrCalls => _asrCalls;
   int get asrRejected => _asrRejected;
   int get asrAccepted => _asrAccepted;
@@ -87,6 +98,8 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> initialize() async {
+    await engineRegistry.load();
+    await zipformerStore.refreshFromDisk();
     await quranProvider.initialize();
     await matcher.initialize(quranProvider, const MatcherConfig());
     final ready = await modelManager.isReady();
@@ -96,6 +109,36 @@ class AppState extends ChangeNotifier {
       _modelStatusLabel = 'Model: not downloaded';
     }
     _updateModelStatusLabel();
+    notifyListeners();
+  }
+
+  Future<void> selectEngine(String id) async {
+    if (_isRecording) {
+      await stopRecording();
+    }
+    await engineRegistry.select(id);
+    _updateModelStatusLabel();
+    notifyListeners();
+  }
+
+  Future<void> importZipformerModel() async {
+    if (_isImportingZipformer) return;
+    _isImportingZipformer = true;
+    notifyListeners();
+    final ok = await zipformerStore.importViaSaf(
+      onProgress: (p) {
+        notifyListeners();
+      },
+    );
+    _isImportingZipformer = false;
+    if (!ok && zipformerStore.lastError != null) {
+      _errorMessage = zipformerStore.lastError;
+    }
+    notifyListeners();
+  }
+
+  Future<void> clearZipformerModel() async {
+    await zipformerStore.clear();
     notifyListeners();
   }
 
@@ -112,7 +155,12 @@ class AppState extends ChangeNotifier {
             : 'Model: loading…';
         break;
       case AsrModelStatus.ready:
-        _modelStatusLabel = 'Model: ready (quran-asr-small)';
+        if (engineRegistry.isDiagnosticSelected) {
+          _modelStatusLabel = 'Diagnostic ready (quran-asr-small)';
+        } else {
+          _modelStatusLabel =
+              'Primary: Zipformer 3.2 (files only — init in 2.4-B)';
+        }
         break;
       case AsrModelStatus.error:
         _modelStatusLabel = 'Model: error';
@@ -120,6 +168,16 @@ class AppState extends ChangeNotifier {
       case AsrModelStatus.inferring:
         _modelStatusLabel = 'Model: recognizing…';
         break;
+    }
+    if (engineRegistry.isPrimarySelected) {
+      if (zipformerStore.filesVerified) {
+        _modelStatusLabel =
+            'Zipformer 3.2: files imported (not Ready — need 2.4-B)';
+      } else if (zipformerStore.state == Zipformer32InstallState.notInstalled) {
+        _modelStatusLabel = 'Zipformer 3.2: not installed';
+      } else if (zipformerStore.state == Zipformer32InstallState.error) {
+        _modelStatusLabel = 'Zipformer 3.2: install error';
+      }
     }
   }
 
@@ -156,9 +214,17 @@ class AppState extends ChangeNotifier {
 
   Future<void> startRecording() async {
     if (_isRecording) return;
+    // Primary Zipformer has no inference in M2.4-A.
+    if (engineRegistry.isPrimarySelected) {
+      _errorMessage =
+          'Zipformer 3.2 inference not available yet (Milestone 2.4-B). '
+          'Import model files in Settings, or select Diagnostic engine.';
+      notifyListeners();
+      return;
+    }
     if (!modelReady) {
       _errorMessage =
-          'Model not ready. Tap "Download model" first (≈36 MB, one-time).';
+          'Diagnostic model not ready. Download quran-asr-small first.';
       notifyListeners();
       return;
     }

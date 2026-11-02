@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../engine/asr/asr_engine.dart';
 import '../state/app_state.dart';
+import 'settings_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -23,6 +24,14 @@ class HomeScreen extends StatelessWidget {
           ),
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.settings, color: Color(0xFFC9D1D9)),
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const SettingsScreen()),
+              );
+            },
+          ),
           Consumer<AppState>(
             builder: (context, state, _) {
               return Padding(
