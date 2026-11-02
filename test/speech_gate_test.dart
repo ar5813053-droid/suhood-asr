@@ -110,3 +110,28 @@ void main() {
     });
   });
 }
+
+  group('SpeechGate calibration', () {
+    test('rejects segments during calibration', () {
+      final gate = SpeechGate(
+        config: const SpeechGateConfig(calibrationSamples: 32000),
+      );
+      // Only 0.5 s of audio — still calibrating
+      gate.processSamples(List<int>.filled(8000, 0));
+      expect(gate.isCalibrating, isTrue);
+      final ok = gate.shouldRecognizeSegment(
+        List<int>.filled(16000, 1000),
+        finalFlush: false,
+      );
+      expect(ok, isFalse);
+    });
+
+    test('leaves calibration after enough samples', () {
+      final gate = SpeechGate(
+        config: const SpeechGateConfig(calibrationSamples: 8000),
+      );
+      gate.processSamples(List<int>.filled(8000, 20));
+      expect(gate.isCalibrating, isFalse);
+      expect(gate.state, SpeechState.silence);
+    });
+  });

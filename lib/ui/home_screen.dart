@@ -155,7 +155,7 @@ class HomeScreen extends StatelessWidget {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        state.isRecording ? 'Listening' : 'Idle',
+                        state.isRecording ? state.listenStatus : 'Idle',
                         style: const TextStyle(
                           color: Color(0xFF8B949E),
                           fontSize: 12,
@@ -172,9 +172,15 @@ class HomeScreen extends StatelessWidget {
                   return Padding(
                     padding: const EdgeInsets.only(top: 8),
                     child: Text(
-                      'VAD: ${state.vadStateLabel}  |  floor: ${state.noiseFloor.toStringAsFixed(4)}  |  '
-                      'ASR: ${state.asrCalls}  rej: ${state.asrRejected}  |  ${state.lastInferenceMs} ms\n'
-                      'raw: ${state.lastRawAsr}',
+                      'VAD: ${state.vadStateLabel}  floor: ${state.noiseFloor.toStringAsFixed(4)}  '
+                      'rms: ${state.audioLevel.toStringAsFixed(3)}  peak: ${state.peakLevel.toStringAsFixed(3)}\n'
+                      'ASR calls: ${state.asrCalls}  ok: ${state.asrAccepted}  rej: ${state.asrRejected}  '
+                      '${state.lastInferenceMs} ms\n'
+                      'reject: ${state.lastRejectReason}\n'
+                      'merge: ${state.lastMergeNote}\n'
+                      'raw: ${state.lastRawAsr}\n'
+                      'filtered: ${state.lastFilteredAsr}\n'
+                      'CTC confidence: not available in current runtime',
                       style: const TextStyle(color: Color(0xFF6E7681), fontSize: 10),
                     ),
                   );

@@ -4,7 +4,9 @@ import 'package:flutter/foundation.dart';
 
 import '../engine/asr/asr_engine.dart';
 import '../engine/asr/model_manager.dart';
+import '../engine/asr/output_validator.dart';
 import '../engine/asr/sherpa_quran_asr.dart';
+import '../engine/asr/transcript_merger.dart';
 import '../engine/audio/audio_source.dart';
 import '../engine/audio/mic_audio_source.dart';
 import '../engine/audio/speech_gate.dart';
@@ -12,9 +14,7 @@ import '../engine/matcher/ayah_matcher.dart';
 import '../engine/qiraat/qiraat.dart';
 import '../engine/quran/quran_text.dart';
 
-/// Application state for Milestone 2.1: gated mic + offline Quran ASR.
-///
-/// Critical rule: silence / ambient noise must NEVER produce a Quran transcript.
+/// Milestone 2.2 app state: calibration, validated ASR, reliable merge.
 class AppState extends ChangeNotifier {
   final MicAudioSource micSource = MicAudioSource();
   final ModelManager modelManager = ModelManager();
@@ -24,46 +24,44 @@ class AppState extends ChangeNotifier {
   final AyahMatcher matcher = StubAyahMatcher();
   final QiraatSelector qiraatSelector = StubQiraatSelector();
   final SpeechGate speechGate = SpeechGate();
+  final AsrOutputValidator validator = AsrOutputValidator();
+  final TranscriptMerger merger = TranscriptMerger();
 
   bool _isRecording = false;
   bool _isDownloading = false;
-  String _liveTranscript = '';
-  String _finalTranscript = '';
   String _detectedSurahAyah = '—';
   String _modelStatusLabel = 'Model: checking…';
+  String _listenStatus = 'Idle';
   String? _errorMessage;
   bool _offlineMode = true;
   double _audioLevel = 0.0;
   double _downloadProgress = 0.0;
   bool _debugMode = false;
 
-  // Debug metrics
   int _asrCalls = 0;
   int _asrRejected = 0;
+  int _asrAccepted = 0;
   int _lastInferenceMs = 0;
   String _lastRawAsr = '';
+  String _lastFilteredAsr = '';
+  String _lastRejectReason = '';
+  String _lastMergeNote = '';
   String _vadStateLabel = 'silence';
+  double _peakLevel = 0.0;
 
   StreamSubscription<AudioChunk>? _audioSub;
   final List<int> _pcmBuffer = [];
   Timer? _segmentTimer;
   bool _processing = false;
-
-  // Published sample index tracking to avoid re-decoding the same region
+  bool _stopRequested = false;
 
   bool get isRecording => _isRecording;
   bool get isDownloading => _isDownloading;
-  String get liveTranscript => _liveTranscript;
-  String get finalTranscript => _finalTranscript;
-  String get transcriptDisplay {
-    if (_finalTranscript.isEmpty && _liveTranscript.isEmpty) return '';
-    if (_liveTranscript.isEmpty) return _finalTranscript;
-    if (_finalTranscript.isEmpty) return _liveTranscript;
-    return '$_finalTranscript $_liveTranscript'.trim();
-  }
-
+  String get finalTranscript => merger.text;
+  String get transcriptDisplay => merger.text;
   String get detectedSurahAyah => _detectedSurahAyah;
   String get modelStatusLabel => _modelStatusLabel;
+  String get listenStatus => _listenStatus;
   String? get errorMessage => _errorMessage;
   bool get offlineMode => _offlineMode;
   double get audioLevel => _audioLevel;
@@ -73,10 +71,15 @@ class AppState extends ChangeNotifier {
   bool get debugMode => _debugMode;
   int get asrCalls => _asrCalls;
   int get asrRejected => _asrRejected;
+  int get asrAccepted => _asrAccepted;
   int get lastInferenceMs => _lastInferenceMs;
   String get lastRawAsr => _lastRawAsr;
+  String get lastFilteredAsr => _lastFilteredAsr;
+  String get lastRejectReason => _lastRejectReason;
+  String get lastMergeNote => _lastMergeNote;
   String get vadStateLabel => _vadStateLabel;
   double get noiseFloor => speechGate.noiseFloor;
+  double get peakLevel => _peakLevel;
 
   void setDebugMode(bool v) {
     _debugMode = v;
@@ -86,7 +89,6 @@ class AppState extends ChangeNotifier {
   Future<void> initialize() async {
     await quranProvider.initialize();
     await matcher.initialize(quranProvider, const MatcherConfig());
-
     final ready = await modelManager.isReady();
     if (ready) {
       await asrEngine.initialize(const AsrConfig());
@@ -136,7 +138,6 @@ class AppState extends ChangeNotifier {
         notifyListeners();
       },
     );
-
     _isDownloading = false;
     if (!ok) {
       _errorMessage = asrEngine.lastError ?? 'Download failed';
@@ -155,14 +156,12 @@ class AppState extends ChangeNotifier {
 
   Future<void> startRecording() async {
     if (_isRecording) return;
-
     if (!modelReady) {
       _errorMessage =
           'Model not ready. Tap "Download model" first (≈36 MB, one-time).';
       notifyListeners();
       return;
     }
-
     final permitted = await micSource.requestPermission();
     if (!permitted) {
       _errorMessage = 'Microphone permission denied';
@@ -171,22 +170,40 @@ class AppState extends ChangeNotifier {
     }
 
     _errorMessage = null;
-    _liveTranscript = '';
+    _stopRequested = false;
     _pcmBuffer.clear();
     speechGate.reset();
+    // Keep prior transcript unless user cleared — do not wipe on restart
     _isRecording = true;
     _audioLevel = 0.0;
-    _vadStateLabel = 'silence';
+    _peakLevel = 0.0;
+    _listenStatus = 'Calibrating noise…';
+    _vadStateLabel = 'calibrating';
     notifyListeners();
 
     final stream = micSource.start(const AudioCaptureConfig(sampleRate: 16000));
     _audioSub = stream.listen(
       (chunk) {
-        if (!_isRecording) return;
+        if (!_isRecording || _stopRequested) return;
         speechGate.processSamples(chunk.samples);
         _vadStateLabel = speechGate.state.name;
+        if (speechGate.isCalibrating) {
+          _listenStatus = 'Calibrating noise…';
+        } else if (speechGate.state == SpeechState.speech ||
+            speechGate.state == SpeechState.hangover) {
+          _listenStatus = 'Listening';
+        } else {
+          _listenStatus = 'Listening';
+        }
         _pcmBuffer.addAll(chunk.samples);
         _audioLevel = micSource.level;
+        // peak from this chunk
+        var peak = 0.0;
+        for (final s in chunk.samples) {
+          final a = (s / 32768.0).abs();
+          if (a > peak) peak = a;
+        }
+        _peakLevel = peak;
         notifyListeners();
       },
       onError: (Object e) {
@@ -195,18 +212,19 @@ class AppState extends ChangeNotifier {
       },
     );
 
-    // Check every 1.5 s — only ASR when SpeechGate accepts the segment.
-    _segmentTimer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
-      _processSegment(finalFlush: false);
+    _segmentTimer =
+        Timer.periodic(const Duration(milliseconds: 1500), (_) {
+      if (!_stopRequested) {
+        _processSegment(finalFlush: false);
+      }
     });
   }
 
   Future<void> _processSegment({required bool finalFlush}) async {
     if (_processing) return;
     if (_pcmBuffer.isEmpty) return;
-
-    // Need enough audio to evaluate
     if (!finalFlush && _pcmBuffer.length < 8000) return;
+    if (_stopRequested && !finalFlush) return;
 
     _processing = true;
     try {
@@ -217,14 +235,14 @@ class AppState extends ChangeNotifier {
 
       final segment = List<int>.from(_pcmBuffer.sublist(0, take));
 
-      // --- Speech gate: never ASR pure silence / ambient noise ---
       if (!speechGate.shouldRecognizeSegment(segment, finalFlush: finalFlush)) {
         _asrRejected++;
-        // Drop most of the silent buffer; keep a short tail for continuity
+        _lastRejectReason = speechGate.isCalibrating
+            ? 'calibration in progress'
+            : 'speech gate: silence/noise';
         final keep = finalFlush ? 0 : 3200;
         if (_pcmBuffer.length > keep) {
-          final start = _pcmBuffer.length - keep;
-          final tail = _pcmBuffer.sublist(start);
+          final tail = _pcmBuffer.sublist(_pcmBuffer.length - keep);
           _pcmBuffer
             ..clear()
             ..addAll(tail);
@@ -235,13 +253,14 @@ class AppState extends ChangeNotifier {
         return;
       }
 
-      // Controlled overlap only for accepted speech segments (~0.4 s)
       final overlap = finalFlush ? 0 : 6400;
       final keepFrom = (take - overlap).clamp(0, _pcmBuffer.length);
       final remaining = _pcmBuffer.sublist(keepFrom);
       _pcmBuffer
         ..clear()
         ..addAll(remaining);
+
+      if (_stopRequested && !finalFlush) return;
 
       final sw = Stopwatch()..start();
       _asrCalls++;
@@ -252,84 +271,77 @@ class AppState extends ChangeNotifier {
       _lastInferenceMs = sw.elapsedMilliseconds;
       _updateModelStatusLabel();
 
-      if (result.errorMessage != null && result.hypotheses.isEmpty) {
-        // Rejected by engine safeguards — do not surface as transcript
+      if (_stopRequested && !finalFlush) return;
+
+      final raw = result.bestText;
+      _lastRawAsr = raw;
+
+      if (result.errorMessage != null && raw.isEmpty) {
         _asrRejected++;
-        _lastRawAsr = result.errorMessage ?? '';
+        _lastRejectReason = result.errorMessage!;
         notifyListeners();
         return;
       }
 
-      final text = result.bestText;
-      _lastRawAsr = text;
+      final v = validator.validate(
+        rawText: raw,
+        sampleCount: segment.length,
+        sampleRate: 16000,
+      );
+      _lastFilteredAsr = v.filteredText ?? '';
+      _lastRejectReason = v.reason;
+
+      if (v.decision == AsrValidationDecision.rejected) {
+        _asrRejected++;
+        notifyListeners();
+        return;
+      }
+
+      // accepted or uncertain — publish (uncertain still shown; debug explains)
+      final text = v.filteredText ?? raw;
       if (text.isEmpty) {
         _asrRejected++;
         notifyListeners();
         return;
       }
 
-      _appendTranscript(text);
+      final merge = merger.append(text);
+      _lastMergeNote = merge.note;
+      _asrAccepted++;
       notifyListeners();
     } finally {
       _processing = false;
     }
   }
 
-  void _appendTranscript(String text) {
-    final incoming = text.trim();
-    if (incoming.isEmpty) return;
-
-    if (_finalTranscript.isEmpty) {
-      _finalTranscript = incoming;
-      _liveTranscript = '';
-      return;
-    }
-
-    // Deduplicate overlap at word boundary
-    final existing = _finalTranscript.split(RegExp(r'\s+'));
-    final next = incoming.split(RegExp(r'\s+'));
-    var overlap = 0;
-    final maxCheck =
-        existing.length < next.length ? existing.length : next.length;
-    for (var k = maxCheck; k > 0; k--) {
-      final tail = existing.sublist(existing.length - k).join(' ');
-      final head = next.sublist(0, k).join(' ');
-      if (tail == head) {
-        overlap = k;
-        break;
-      }
-    }
-    final novel = next.sublist(overlap).join(' ').trim();
-    if (novel.isNotEmpty) {
-      _finalTranscript = '$_finalTranscript $novel'.trim();
-    }
-    _liveTranscript = '';
-  }
-
   Future<void> stopRecording() async {
+    _stopRequested = true;
     _segmentTimer?.cancel();
     _segmentTimer = null;
     await _audioSub?.cancel();
     _audioSub = null;
     await micSource.stop();
 
-    // Flush only if speech was present
     await _processSegment(finalFlush: true);
 
     _pcmBuffer.clear();
     _isRecording = false;
     _audioLevel = 0.0;
+    _peakLevel = 0.0;
+    _listenStatus = 'Idle';
     _vadStateLabel = 'silence';
     _updateModelStatusLabel();
     notifyListeners();
   }
 
   void clearTranscript() {
-    _liveTranscript = '';
-    _finalTranscript = '';
+    merger.clear();
     _detectedSurahAyah = '—';
     _errorMessage = null;
     _lastRawAsr = '';
+    _lastFilteredAsr = '';
+    _lastRejectReason = '';
+    _lastMergeNote = '';
     notifyListeners();
   }
 

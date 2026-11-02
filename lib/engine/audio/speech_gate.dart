@@ -20,6 +20,7 @@ import 'dart:math' as math;
 import 'audio_source.dart';
 
 enum SpeechState {
+  calibrating,
   silence,
   speech,
   hangover, // recent speech, pause in progress
@@ -47,6 +48,10 @@ class SpeechGateConfig {
   /// Analysis window size in samples (16 kHz → 320 = 20 ms).
   final int frameSamples;
 
+  /// Startup calibration length in samples (16 kHz × seconds).
+  /// During calibration, frames only update the noise floor; ASR is blocked.
+  final int calibrationSamples;
+
   const SpeechGateConfig({
     this.absoluteSilenceRms = 0.008,
     this.minPeak = 0.02,
@@ -55,6 +60,7 @@ class SpeechGateConfig {
     this.hangoverFrames = 25, // ~500 ms
     this.minSpeechFrames = 8, // ~160 ms
     this.frameSamples = 320,
+    this.calibrationSamples = 16000 * 2, // 2 seconds warm-up
   });
 }
 
@@ -76,9 +82,10 @@ class SpeechGate {
   final SpeechGateConfig config;
 
   double noiseFloor = 0.01;
-  SpeechState state = SpeechState.silence;
+  SpeechState state = SpeechState.calibrating;
   int _speechRun = 0;
   int _hangoverLeft = 0;
+  int _calibrationSamplesSeen = 0;
 
   // Debug counters
   int framesSeen = 0;
@@ -86,11 +93,14 @@ class SpeechGate {
   int segmentsAccepted = 0;
   int segmentsRejected = 0;
 
+  bool get isCalibrating => state == SpeechState.calibrating;
+
   void reset() {
     noiseFloor = 0.01;
-    state = SpeechState.silence;
+    state = SpeechState.calibrating;
     _speechRun = 0;
     _hangoverLeft = 0;
+    _calibrationSamplesSeen = 0;
   }
 
   FrameStats analyzeFrame(List<int> pcm16) {
@@ -129,13 +139,34 @@ class SpeechGate {
 
   /// Feed continuous PCM; updates internal VAD state.
   void processSamples(List<int> pcm16) {
+    if (pcm16.isEmpty) return;
+
+    // Calibration: only track noise floor, never open speech state.
+    if (state == SpeechState.calibrating) {
+      final n = config.frameSamples;
+      for (var i = 0; i + n <= pcm16.length; i += n) {
+        final frame = pcm16.sublist(i, i + n);
+        // Force quiet-path update of noise floor
+        final st = analyzeFrame(frame);
+        // During calibration, always fold energy into the floor more aggressively
+        noiseFloor = 0.7 * noiseFloor + 0.3 * st.rms;
+        if (noiseFloor < 0.001) noiseFloor = 0.001;
+        if (noiseFloor > 0.05) noiseFloor = 0.05; // cap so soft speech still works
+        framesSeen++;
+      }
+      _calibrationSamplesSeen += pcm16.length;
+      if (_calibrationSamplesSeen >= config.calibrationSamples) {
+        state = SpeechState.silence;
+      }
+      return;
+    }
+
     final n = config.frameSamples;
     for (var i = 0; i + n <= pcm16.length; i += n) {
       final frame = pcm16.sublist(i, i + n);
       final stats = analyzeFrame(frame);
       _updateState(stats.isSpeechLike);
     }
-    // leftover samples ignored until next call (accumulate externally if needed)
   }
 
   void _updateState(bool speechLike) {
@@ -178,6 +209,10 @@ class SpeechGate {
 
   /// Whether a buffered segment should be sent to ASR.
   bool shouldRecognizeSegment(List<int> pcm16, {required bool finalFlush}) {
+    if (state == SpeechState.calibrating) {
+      segmentsRejected++;
+      return false;
+    }
     if (pcm16.isEmpty) {
       segmentsRejected++;
       return false;

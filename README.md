@@ -4,7 +4,7 @@
 
 Modular architecture for live Quran recitation transcription, Surah/Ayah identification, word-level tracking, multi-Qira'at support, and future Tajweed analysis.
 
-> **Milestone 2.1:** adaptive speech gate (VAD-like) so **silence never produces Quran text**. Same model: `Abdou/quran-asr-small` via sherpa-onnx.
+> **Milestone 2.2:** startup calibration, ASR output validation, reliable overlap merge. Same model: `Abdou/quran-asr-small` via sherpa-onnx.
 
 ---
 
@@ -37,6 +37,9 @@ Development is possible from an Android phone (Termux + browser + GitHub Actions
 | Chunk / segment transcription | ✅ |
 | Adaptive speech gate (silence → no ASR) | ✅ |
 | False transcript on silence fixed | ✅ |
+| Startup noise calibration (2s) | ✅ |
+| ASR output validator (non-Arabic / spam) | ✅ |
+| Deterministic overlap merger | ✅ |
 | UI: download, level, transcript, clear | ✅ |
 | Surah/Ayah matcher | ❌ Stub (always no match) |
 | True frame-level streaming ASR | ❌ Segment-based offline CTC |
