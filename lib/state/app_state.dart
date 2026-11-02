@@ -10,6 +10,7 @@ import '../engine/asr/output_validator.dart';
 import '../engine/asr/sherpa_quran_asr.dart';
 import '../engine/asr/transcript_merger.dart';
 import '../engine/asr/zipformer32_model_store.dart';
+import '../engine/asr/sherpa_zipformer_quran32.dart';
 import '../engine/audio/audio_source.dart';
 import '../engine/audio/mic_audio_source.dart';
 import '../engine/audio/speech_gate.dart';
@@ -31,6 +32,10 @@ class AppState extends ChangeNotifier {
   final TranscriptMerger merger = TranscriptMerger();
   final EngineRegistry engineRegistry = EngineRegistry();
   final Zipformer32ModelStore zipformerStore = Zipformer32ModelStore();
+  late final SherpaZipformerQuran32Engine zipformerEngine =
+      SherpaZipformerQuran32Engine(store: zipformerStore);
+  bool _isInitializingZipformer = false;
+  String? _zipformerInitMessage;
 
   bool _isRecording = false;
   bool _isImportingZipformer = false;
@@ -76,6 +81,9 @@ class AppState extends ChangeNotifier {
   bool get modelReady => asrEngine.status == AsrModelStatus.ready;
   bool get debugMode => _debugMode;
   bool get isImportingZipformer => _isImportingZipformer;
+  bool get isInitializingZipformer => _isInitializingZipformer;
+  String? get zipformerInitMessage => _zipformerInitMessage;
+  int get zipformerLastInitMs => zipformerEngine.lastInitMs;
   String get selectedEngineId => engineRegistry.selectedId;
   String get activeEngineLabel => engineDisplayName(engineRegistry.selectedId);
   /// Zipformer is never inference-ready in M2.4-A.
@@ -138,7 +146,34 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> clearZipformerModel() async {
+    await zipformerEngine.dispose();
+    zipformerStore.inferenceInitialized = false;
     await zipformerStore.clear();
+    _zipformerInitMessage = null;
+    _updateModelStatusLabel();
+    notifyListeners();
+  }
+
+  /// M2.4-B: construct OnlineRecognizer from imported files.
+  Future<void> loadZipformerEngine() async {
+    if (_isInitializingZipformer) return;
+    if (_isRecording) {
+      await stopRecording();
+    }
+    // Never load diagnostic + zipformer together: dispose diagnostic if needed
+    // (diagnostic stays constructed but we only init zipformer here)
+    _isInitializingZipformer = true;
+    _zipformerInitMessage = 'Loading OnlineRecognizer…';
+    notifyListeners();
+
+    final result = await zipformerEngine.initializeFromStore();
+    zipformerStore.inferenceInitialized = result.success;
+    _zipformerInitMessage = result.message;
+    _isInitializingZipformer = false;
+    if (!result.success) {
+      _errorMessage = result.message;
+    }
+    _updateModelStatusLabel();
     notifyListeners();
   }
 
@@ -170,9 +205,12 @@ class AppState extends ChangeNotifier {
         break;
     }
     if (engineRegistry.isPrimarySelected) {
-      if (zipformerStore.filesVerified) {
+      if (zipformerEngine.isInitialized) {
         _modelStatusLabel =
-            'Zipformer 3.2: files imported (not Ready — need 2.4-B)';
+            'Zipformer 3.2: Ready (${zipformerEngine.lastInitMs} ms)';
+      } else if (zipformerStore.filesVerified) {
+        _modelStatusLabel =
+            'Zipformer 3.2: files imported — tap Load engine';
       } else if (zipformerStore.state == Zipformer32InstallState.notInstalled) {
         _modelStatusLabel = 'Zipformer 3.2: not installed';
       } else if (zipformerStore.state == Zipformer32InstallState.error) {
@@ -216,9 +254,14 @@ class AppState extends ChangeNotifier {
     if (_isRecording) return;
     // Primary Zipformer has no inference in M2.4-A.
     if (engineRegistry.isPrimarySelected) {
+      if (!zipformerEngine.isInitialized) {
+        _errorMessage =
+            'Zipformer 3.2 not Ready. Import files and tap Load engine in Settings.';
+        notifyListeners();
+        return;
+      }
       _errorMessage =
-          'Zipformer 3.2 inference not available yet (Milestone 2.4-B). '
-          'Import model files in Settings, or select Diagnostic engine.';
+          'Streaming recognition is Milestone 2.4-C. Engine is loaded; mic streaming not enabled yet.';
       notifyListeners();
       return;
     }
@@ -422,6 +465,7 @@ class AppState extends ChangeNotifier {
     _audioSub?.cancel();
     micSource.dispose();
     asrEngine.dispose();
+    zipformerEngine.dispose();
     quranProvider.dispose();
     matcher.dispose();
     qiraatSelector.dispose();

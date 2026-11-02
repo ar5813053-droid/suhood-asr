@@ -197,10 +197,24 @@ class _ZipformerInstallCard extends StatelessWidget {
             style: const TextStyle(color: Color(0xFF8B949E), fontSize: 12),
           ),
           const SizedBox(height: 4),
-          const Text(
-            'Inference Ready: no (engine init is Milestone 2.4-B)',
-            style: TextStyle(color: Color(0xFFE9C46A), fontSize: 12),
+          Text(
+            store.isReadyForInference
+                ? 'Inference Ready: yes (${state.zipformerLastInitMs} ms init)'
+                : 'Inference Ready: no',
+            style: TextStyle(
+              color: store.isReadyForInference
+                  ? const Color(0xFF95D5B2)
+                  : const Color(0xFFE9C46A),
+              fontSize: 12,
+            ),
           ),
+          if (state.zipformerInitMessage != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              state.zipformerInitMessage!,
+              style: const TextStyle(color: Color(0xFF8B949E), fontSize: 11),
+            ),
+          ],
           if (store.lastError != null) ...[
             const SizedBox(height: 8),
             Text(
@@ -217,11 +231,20 @@ class _ZipformerInstallCard extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 12),
+          if (state.isInitializingZipformer) ...[
+            const SizedBox(height: 10),
+            const LinearProgressIndicator(
+              backgroundColor: Color(0xFF2A3544),
+              color: Color(0xFF2D6A4F),
+            ),
+          ],
+          const SizedBox(height: 8),
           Row(
             children: [
               Expanded(
                 child: OutlinedButton(
-                  onPressed: state.isImportingZipformer
+                  onPressed: state.isImportingZipformer ||
+                          state.isInitializingZipformer
                       ? null
                       : () => state.importZipformerModel(),
                   style: OutlinedButton.styleFrom(
@@ -233,14 +256,34 @@ class _ZipformerInstallCard extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               if (store.filesVerified)
-                TextButton(
-                  onPressed: state.isImportingZipformer
-                      ? null
-                      : () => state.clearZipformerModel(),
-                  child: const Text('Remove', style: TextStyle(fontSize: 12)),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: state.isImportingZipformer ||
+                            state.isInitializingZipformer
+                        ? null
+                        : () => state.loadZipformerEngine(),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2D6A4F),
+                      foregroundColor: Colors.white,
+                    ),
+                    child: Text(
+                      store.isReadyForInference ? 'Reload engine' : 'Load engine',
+                    ),
+                  ),
                 ),
             ],
           ),
+          if (store.filesVerified || store.isReadyForInference)
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: state.isImportingZipformer ||
+                        state.isInitializingZipformer
+                    ? null
+                    : () => state.clearZipformerModel(),
+                child: const Text('Remove files', style: TextStyle(fontSize: 12)),
+              ),
+            ),
           const SizedBox(height: 6),
           Text(
             'Select ${Zipformer32Specs.onnxFileName} and '

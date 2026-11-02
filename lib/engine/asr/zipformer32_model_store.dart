@@ -62,8 +62,10 @@ class Zipformer32ModelStore {
       _onnxPath != null &&
       _tokensPath != null;
 
-  /// Always false in M2.4-A. Inference init is M2.4-B.
-  bool get isReadyForInference => false;
+  /// Set by AppState after OnlineRecognizer init succeeds (M2.4-B).
+  bool inferenceInitialized = false;
+
+  bool get isReadyForInference => inferenceInitialized;
 
   Future<Directory> _dir() async {
     final root = await getApplicationSupportDirectory();
@@ -269,5 +271,6 @@ class Zipformer32ModelStore {
     statusDetail = 'Not installed';
     lastError = null;
     importProgress = 0.0;
+    inferenceInitialized = false;
   }
 }

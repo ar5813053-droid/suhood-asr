@@ -108,11 +108,14 @@ void main() {
   });
 
   group('Ready flag', () {
-    test('isReadyForInference is always false in M2.4-A', () {
+    test('isReadyForInference follows inferenceInitialized only', () {
       final store = Zipformer32ModelStore();
       expect(store.isReadyForInference, isFalse);
       store.state = Zipformer32InstallState.filesImported;
+      // Files alone do not mark Ready
       expect(store.isReadyForInference, isFalse);
+      store.inferenceInitialized = true;
+      expect(store.isReadyForInference, isTrue);
     });
   });
 }
