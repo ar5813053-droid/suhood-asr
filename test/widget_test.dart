@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
-import 'package:suhood_asr/main.dart';
 import 'package:suhood_asr/state/app_state.dart';
 import 'package:suhood_asr/ui/home_screen.dart';
 
