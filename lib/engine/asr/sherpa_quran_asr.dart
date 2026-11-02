@@ -153,8 +153,8 @@ class SherpaQuranAsrEngine implements AsrEngine {
 
       // Reject empty or single-character noise emissions from CTC on silence.
       if (text.isEmpty || _isLikelyHallucination(text, chunk.samples.length)) {
-        return AsrResult(
-          hypotheses: const [],
+        return const AsrResult(
+          hypotheses: [],
           isFinal: true,
           status: AsrModelStatus.ready,
           errorMessage: 'rejected: empty or hallucination-like output',

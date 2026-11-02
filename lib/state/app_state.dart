@@ -50,8 +50,6 @@ class AppState extends ChangeNotifier {
   bool _processing = false;
 
   // Published sample index tracking to avoid re-decoding the same region
-  int _processedThroughSample = 0;
-  int _sessionSampleCursor = 0;
 
   bool get isRecording => _isRecording;
   bool get isDownloading => _isDownloading;
@@ -175,8 +173,6 @@ class AppState extends ChangeNotifier {
     _errorMessage = null;
     _liveTranscript = '';
     _pcmBuffer.clear();
-    _processedThroughSample = 0;
-    _sessionSampleCursor = 0;
     speechGate.reset();
     _isRecording = true;
     _audioLevel = 0.0;
@@ -190,7 +186,6 @@ class AppState extends ChangeNotifier {
         speechGate.processSamples(chunk.samples);
         _vadStateLabel = speechGate.state.name;
         _pcmBuffer.addAll(chunk.samples);
-        _sessionSampleCursor += chunk.samples.length;
         _audioLevel = micSource.level;
         notifyListeners();
       },

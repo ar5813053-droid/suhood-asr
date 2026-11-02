@@ -79,7 +79,6 @@ class SpeechGate {
   SpeechState state = SpeechState.silence;
   int _speechRun = 0;
   int _hangoverLeft = 0;
-  int _totalSpeechFramesInSegment = 0;
 
   // Debug counters
   int framesSeen = 0;
@@ -92,7 +91,6 @@ class SpeechGate {
     state = SpeechState.silence;
     _speechRun = 0;
     _hangoverLeft = 0;
-    _totalSpeechFramesInSegment = 0;
   }
 
   FrameStats analyzeFrame(List<int> pcm16) {
@@ -147,7 +145,6 @@ class SpeechGate {
           _speechRun++;
           if (_speechRun >= config.minSpeechFrames) {
             state = SpeechState.speech;
-            _totalSpeechFramesInSegment = _speechRun;
             _speechRun = 0;
           }
         } else {
@@ -156,7 +153,6 @@ class SpeechGate {
         break;
       case SpeechState.speech:
         if (speechLike) {
-          _totalSpeechFramesInSegment++;
           _hangoverLeft = config.hangoverFrames;
         } else {
           _hangoverLeft = config.hangoverFrames;
@@ -166,13 +162,11 @@ class SpeechGate {
       case SpeechState.hangover:
         if (speechLike) {
           state = SpeechState.speech;
-          _totalSpeechFramesInSegment++;
           _hangoverLeft = config.hangoverFrames;
         } else {
           _hangoverLeft--;
           if (_hangoverLeft <= 0) {
             state = SpeechState.silence;
-            _totalSpeechFramesInSegment = 0;
           }
         }
         break;
