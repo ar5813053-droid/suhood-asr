@@ -18,9 +18,10 @@ void main() {
 
     expect(find.text('Suhood Al-Quran STT'), findsOneWidget);
     expect(find.textContaining('Model:'), findsOneWidget);
-    expect(find.text('Detected location'), findsOneWidget);
-    expect(find.text('Transcription'), findsOneWidget);
-    expect(find.text('Tap to start'), findsOneWidget);
+    expect(find.textContaining('raw model phoneme'), findsOneWidget);
+    expect(find.text('RAW PHONEMES'), findsOneWidget);
+    expect(find.text('PARTIAL'), findsOneWidget);
+    expect(find.text('FINAL'), findsOneWidget);
     expect(find.byIcon(Icons.mic), findsOneWidget);
     expect(find.byIcon(Icons.settings), findsOneWidget);
   });
