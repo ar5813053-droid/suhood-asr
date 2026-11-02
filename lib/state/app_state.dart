@@ -309,10 +309,12 @@ class AppState extends ChangeNotifier {
       return;
     }
 
-    final ok = await micSource.start();
-    if (!ok) {
+    late final Stream<AudioChunk> stream;
+    try {
+      stream = micSource.start(const AudioCaptureConfig());
+    } catch (e) {
       zipformerEngine.endSession(finalize: false);
-      _errorMessage = micSource.lastError ?? 'Microphone start failed';
+      _errorMessage = 'Microphone start failed: $e';
       _streamingStatus = 'Error';
       notifyListeners();
       return;
@@ -323,7 +325,7 @@ class AppState extends ChangeNotifier {
     _streamingStatus = 'Streaming';
     notifyListeners();
 
-    _audioSub = micSource.audioStream.listen(
+    _audioSub = stream.listen(
       (chunk) {
         if (_stopRequested) return;
         if (chunk.samples.isEmpty) return;
@@ -393,9 +395,11 @@ class AppState extends ChangeNotifier {
     _peakLevel = 0.0;
     _streamingStatus = 'Diagnostic offline CTC';
 
-    final ok = await micSource.start();
-    if (!ok) {
-      _errorMessage = micSource.lastError ?? 'Microphone start failed';
+    late final Stream<AudioChunk> stream;
+    try {
+      stream = micSource.start(const AudioCaptureConfig());
+    } catch (e) {
+      _errorMessage = 'Microphone start failed: $e';
       notifyListeners();
       return;
     }
@@ -404,7 +408,7 @@ class AppState extends ChangeNotifier {
     _listenStatus = 'Listening…';
     notifyListeners();
 
-    _audioSub = micSource.audioStream.listen(
+    _audioSub = stream.listen(
       (chunk) {
         if (_stopRequested) return;
         _pcmBuffer.addAll(chunk.samples);
