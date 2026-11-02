@@ -54,7 +54,7 @@ class HomeScreen extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Model status
+              // Model status + download
               Consumer<AppState>(
                 builder: (context, state, _) {
                   return Container(
@@ -67,33 +67,103 @@ class HomeScreen extends StatelessWidget {
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(color: const Color(0xFF2A3544)),
                     ),
-                    child: Row(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Icon(
-                          Icons.memory,
-                          size: 18,
-                          color: state.asrStatus == AsrModelStatus.ready
-                              ? const Color(0xFF95D5B2)
-                              : const Color(0xFF8B949E),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            state.modelStatusLabel,
-                            style: const TextStyle(
-                              color: Color(0xFFC9D1D9),
-                              fontSize: 13,
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.memory,
+                              size: 18,
+                              color: state.asrStatus == AsrModelStatus.ready
+                                  ? const Color(0xFF95D5B2)
+                                  : const Color(0xFF8B949E),
                             ),
-                          ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                state.modelStatusLabel,
+                                style: const TextStyle(
+                                  color: Color(0xFFC9D1D9),
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ),
+                            if (!state.modelReady && !state.isDownloading)
+                              TextButton(
+                                onPressed: () => state.downloadAndLoadModel(),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: const Color(0xFF95D5B2),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                  ),
+                                  minimumSize: Size.zero,
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                ),
+                                child: const Text(
+                                  'Download model',
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                              ),
+                          ],
                         ),
+                        if (state.isDownloading) ...[
+                          const SizedBox(height: 8),
+                          LinearProgressIndicator(
+                            value: state.downloadProgress > 0
+                                ? state.downloadProgress
+                                : null,
+                            backgroundColor: const Color(0xFF2A3544),
+                            color: const Color(0xFF2D6A4F),
+                          ),
+                        ],
                       ],
                     ),
                   );
                 },
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 12),
 
-              // Detected Surah / Ayah placeholder
+              // Audio level
+              Consumer<AppState>(
+                builder: (context, state, _) {
+                  return Row(
+                    children: [
+                      Icon(
+                        state.isRecording ? Icons.mic : Icons.mic_off,
+                        size: 16,
+                        color: state.isRecording
+                            ? const Color(0xFF95D5B2)
+                            : const Color(0xFF8B949E),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: LinearProgressIndicator(
+                            value: state.audioLevel,
+                            minHeight: 6,
+                            backgroundColor: const Color(0xFF2A3544),
+                            color: const Color(0xFF40916C),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        state.isRecording ? 'Listening' : 'Idle',
+                        style: const TextStyle(
+                          color: Color(0xFF8B949E),
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
+
+              // Detected location (still placeholder for matcher)
               const Text(
                 'Detected location',
                 style: TextStyle(
@@ -126,26 +196,49 @@ class HomeScreen extends StatelessWidget {
                   );
                 },
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 16),
 
-              // Live transcript placeholder
-              const Text(
-                'Live transcript',
-                style: TextStyle(
-                  color: Color(0xFF8B949E),
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                ),
+              // Transcript
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Transcription',
+                    style: TextStyle(
+                      color: Color(0xFF8B949E),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  Consumer<AppState>(
+                    builder: (context, state, _) {
+                      return TextButton(
+                        onPressed: state.clearTranscript,
+                        style: TextButton.styleFrom(
+                          foregroundColor: const Color(0xFF8B949E),
+                          padding: EdgeInsets.zero,
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text(
+                          'Clear',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      );
+                    },
+                  ),
+                ],
               ),
               const SizedBox(height: 6),
               Expanded(
                 child: Consumer<AppState>(
                   builder: (context, state, _) {
-                    final text = state.liveTranscript.isEmpty
-                        ? (state.isRecording
-                            ? 'Listening… (ASR not yet available)'
-                            : 'Press the microphone to begin.\n\nNo speech recognition is active in Milestone 1.')
-                        : state.liveTranscript;
+                    final text = state.transcriptDisplay;
+                    final placeholder = !state.modelReady
+                        ? 'Download the model (≈36 MB, one-time),\nthen start recording to transcribe Quran recitation.\n\nOffline after download.'
+                        : (state.isRecording
+                            ? 'Listening… speak a verse'
+                            : 'Press the microphone to begin.');
                     return Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(16),
@@ -156,11 +249,11 @@ class HomeScreen extends StatelessWidget {
                       ),
                       child: SingleChildScrollView(
                         child: Text(
-                          text,
+                          text.isEmpty ? placeholder : text,
                           textAlign: TextAlign.right,
                           textDirection: TextDirection.rtl,
                           style: TextStyle(
-                            color: state.liveTranscript.isEmpty
+                            color: text.isEmpty
                                 ? const Color(0xFF6E7681)
                                 : const Color(0xFFE8E6E3),
                             fontSize: 18,
@@ -172,7 +265,27 @@ class HomeScreen extends StatelessWidget {
                   },
                 ),
               ),
-              const SizedBox(height: 28),
+
+              // Error
+              Consumer<AppState>(
+                builder: (context, state, _) {
+                  if (state.errorMessage == null) {
+                    return const SizedBox(height: 8);
+                  }
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 8, bottom: 4),
+                    child: Text(
+                      state.errorMessage!,
+                      style: const TextStyle(
+                        color: Color(0xFFE07A5F),
+                        fontSize: 12,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
 
               // Record button
               Consumer<AppState>(

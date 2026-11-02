@@ -1,6 +1,9 @@
+import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:suhood_asr/engine/asr/asr_engine.dart';
+import 'package:suhood_asr/engine/asr/model_manager.dart';
 import 'package:suhood_asr/engine/audio/audio_source.dart';
+import 'package:suhood_asr/engine/audio/mic_audio_source.dart';
 import 'package:suhood_asr/engine/matcher/ayah_matcher.dart';
 import 'package:suhood_asr/engine/qiraat/qiraat.dart';
 import 'package:suhood_asr/engine/quran/quran_text.dart';
@@ -15,13 +18,31 @@ void main() {
       final stream = source.start(const AudioCaptureConfig());
       expect(source.isCapturing, isTrue);
 
-      // Stream is empty by design.
       final events = await stream.toList();
       expect(events, isEmpty);
 
       await source.stop();
       expect(source.isCapturing, isFalse);
       await source.dispose();
+    });
+  });
+
+  group('PCM helpers', () {
+    test('pcm16BytesToSamples converts little-endian', () {
+      // 0x00 0x10 = 4096
+      final bytes = Uint8List.fromList([0x00, 0x10, 0xFF, 0x7F]);
+      final samples = pcm16BytesToSamples(bytes);
+      expect(samples.length, 2);
+      expect(samples[0], 4096);
+      expect(samples[1], 32767);
+    });
+
+    test('pcm16RmsLevel is in range', () {
+      expect(pcm16RmsLevel([]), 0.0);
+      expect(pcm16RmsLevel([0, 0, 0]), 0.0);
+      final level = pcm16RmsLevel([16000, -16000, 8000]);
+      expect(level, greaterThan(0.0));
+      expect(level, lessThanOrEqualTo(1.0));
     });
   });
 
@@ -44,6 +65,15 @@ void main() {
     });
   });
 
+  group('ModelManager URLs', () {
+    test('points at Abdou/quran-asr-small', () {
+      expect(QuranAsrModelFiles.repo, 'Abdou/quran-asr-small');
+      expect(QuranAsrModelFiles.modelFileName, 'model.int8.onnx');
+      expect(QuranAsrModelFiles.tokensFileName, 'tokens.txt');
+      expect(QuranAsrModelFiles.modelUrl, contains('huggingface.co'));
+    });
+  });
+
   group('StubQuranTextProvider', () {
     test('provides Al-Fatiha only', () async {
       final provider = StubQuranTextProvider();
@@ -55,7 +85,7 @@ void main() {
       expect(ayah, isNotNull);
       expect(ayah!.text, contains('بِسْمِ'));
 
-      expect(provider.getAyah(2, 1), isNull); // no full Quran in stub
+      expect(provider.getAyah(2, 1), isNull);
       await provider.dispose();
     });
   });
