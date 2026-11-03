@@ -206,22 +206,21 @@ class SherpaZipformerQuran32Engine implements AsrEngine {
     _decodeBusy = false;
   }
 
-  /// Feed PCM16 samples; returns latest hypothesis if decode ran.
+  /// Feed PCM16 samples continuously (including real silence) for timing/endpointing.
+  /// Empty buffers are skipped. Near-zero PCM is still forwarded so the stream clock advances.
   ZipformerStreamUpdate? acceptPcm16(List<int> pcm16, {int sampleRate = 16000}) {
     if (!_sessionActive || _recognizer == null || _stream == null) {
       return null;
     }
     if (pcm16.isEmpty) return null;
-    if (isPcmSilenceOrInvalid(pcm16)) {
-      // Still allow very quiet speech through SpeechGate; here only skip empty/digital zero.
-      // Actually isPcmSilence is very strict (maxAbs < 8). Skip accept to save work.
-      return null;
-    }
 
     final floats = pcm16ToFloat32(pcm16);
     _stream!.acceptWaveform(samples: floats, sampleRate: sampleRate);
 
-    if (_decodeBusy) return null;
+    if (_decodeBusy) {
+      // Waveform was accepted; skip parallel decode.
+      return null;
+    }
     _decodeBusy = true;
     try {
       while (_recognizer!.isReady(_stream!)) {
@@ -229,13 +228,15 @@ class SherpaZipformerQuran32Engine implements AsrEngine {
       }
       final result = _recognizer!.getResult(_stream!);
       final endpoint = _recognizer!.isEndpoint(_stream!);
+      final text = result.text;
+      final tokens = List<String>.from(result.tokens);
       if (endpoint) {
-        // Segment boundary: keep stream, reset state for next utterance.
+        // Finalize this segment's hypothesis, then reset stream state for the next.
         _recognizer!.reset(_stream!);
       }
       return ZipformerStreamUpdate(
-        partialText: result.text,
-        tokens: List<String>.from(result.tokens),
+        partialText: text,
+        tokens: tokens,
         isEndpoint: endpoint,
       );
     } finally {

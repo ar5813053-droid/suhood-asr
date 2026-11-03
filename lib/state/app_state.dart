@@ -11,6 +11,7 @@ import '../engine/asr/sherpa_quran_asr.dart';
 import '../engine/asr/transcript_merger.dart';
 import '../engine/asr/zipformer32_model_store.dart';
 import '../engine/asr/sherpa_zipformer_quran32.dart';
+import '../engine/asr/segment_finalizer.dart';
 import '../engine/audio/audio_source.dart';
 import '../engine/audio/mic_audio_source.dart';
 import '../engine/audio/speech_gate.dart';
@@ -62,6 +63,7 @@ class AppState extends ChangeNotifier {
   String _partialPhonemes = '';
   String _finalPhonemes = '';
   String _streamingStatus = 'Idle';
+  final SegmentFinalizer _zipformerFinals = SegmentFinalizer();
 
   StreamSubscription<AudioChunk>? _audioSub;
   final List<int> _pcmBuffer = [];
@@ -291,6 +293,8 @@ class AppState extends ChangeNotifier {
     _errorMessage = null;
     _stopRequested = false;
     _partialPhonemes = '';
+    _finalPhonemes = '';
+    _zipformerFinals.clear();
     _streamingStatus = 'Starting…';
     speechGate.reset();
     _asrCalls = 0;
@@ -325,11 +329,15 @@ class AppState extends ChangeNotifier {
     _streamingStatus = 'Streaming';
     notifyListeners();
 
+    _zipformerFinals.clear();
+    _finalPhonemes = '';
+
     _audioSub = stream.listen(
       (chunk) {
         if (_stopRequested) return;
         if (chunk.samples.isEmpty) return;
 
+        // VAD for UI only — does NOT withhold samples from OnlineStream.
         speechGate.processSamples(chunk.samples);
         final st = speechGate.analyzeFrame(chunk.samples);
         _audioLevel = st.rms.clamp(0.0, 1.0);
@@ -337,17 +345,14 @@ class AppState extends ChangeNotifier {
         _vadStateLabel = speechGate.state.name;
 
         if (speechGate.state == SpeechState.calibrating) {
-          _listenStatus = 'Calibrating noise…';
-          notifyListeners();
-          return;
+          _listenStatus = 'Calibrating noise (audio still streaming)…';
+        } else if (!speechGate.inSpeechRegion) {
+          _listenStatus = 'Listening (silence in stream)…';
+        } else {
+          _listenStatus = 'Listening (Zipformer stream)…';
         }
 
-        if (!speechGate.inSpeechRegion) {
-          _asrRejected++;
-          notifyListeners();
-          return;
-        }
-
+        // Continuous 16 kHz mono waveform, including silence, same OnlineStream.
         final update = zipformerEngine.acceptPcm16(
           chunk.samples,
           sampleRate: chunk.sampleRate,
@@ -358,16 +363,16 @@ class AppState extends ChangeNotifier {
           return;
         }
 
-        _partialPhonemes = update.partialText;
+        // PARTIAL is replaceable.
+        _partialPhonemes = _zipformerFinals.replacePartial(update.partialText);
         _lastRawAsr = update.partialText;
-        if (update.isEndpoint && update.partialText.trim().isNotEmpty) {
-          final piece = update.partialText.trim();
-          if (_finalPhonemes.isEmpty) {
-            _finalPhonemes = piece;
-          } else {
-            _finalPhonemes = '$_finalPhonemes | $piece';
+
+        // FINAL: one commit per endpoint segment.
+        if (update.isEndpoint) {
+          if (_zipformerFinals.commitFinal(update.partialText)) {
+            _finalPhonemes = _zipformerFinals.joinedFinals;
+            _asrAccepted++;
           }
-          _asrAccepted++;
         }
         notifyListeners();
       },
@@ -542,15 +547,14 @@ class AppState extends ChangeNotifier {
 
     if (engineRegistry.isPrimarySelected) {
       final fin = zipformerEngine.endSession(finalize: true);
-      if (fin != null && fin.partialText.trim().isNotEmpty) {
-        final text = fin.partialText.trim();
-        if (_finalPhonemes.isEmpty) {
-          _finalPhonemes = text;
-        } else if (!_finalPhonemes.endsWith(text)) {
-          _finalPhonemes = '$_finalPhonemes | $text';
+      if (fin != null) {
+        _partialPhonemes = fin.partialText;
+        _lastRawAsr = fin.partialText;
+        // Commit at most once if not already committed by endpoint.
+        if (_zipformerFinals.commitFinal(fin.partialText)) {
+          _finalPhonemes = _zipformerFinals.joinedFinals;
+          _asrAccepted++;
         }
-        _partialPhonemes = text;
-        _lastRawAsr = text;
       }
       _streamingStatus = 'Stopped';
     } else {
